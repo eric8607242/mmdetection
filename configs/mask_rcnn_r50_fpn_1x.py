@@ -1,17 +1,25 @@
 # model settings
 model = dict(
     type='MaskRCNN',
-    pretrained='torchvision://resnet50',
+    pretrained=True,
     backbone=dict(
-        type='ResNet',
-        depth=50,
-        num_stages=4,
-        out_indices=(0, 1, 2, 3),
-        frozen_stages=1,
-        style='pytorch'),
+#         type='MobileNetV2',
+        type='Network',
+#           type='Proxy',
+#     type='FairNasA'
+#     pretrained='torchvision://resnet50',
+#     backbone=dict(
+#         type='ResNet',
+#         depth=50,
+#         num_stages=4,
+#         out_indices=(0, 1, 2, 3),
+#         frozen_stages=1,
+#         style='pytorch'
+    ),
     neck=dict(
         type='FPN',
-        in_channels=[256, 512, 1024, 2048],
+        in_channels = [80, 96, 192, 1280],
+#         in_channels=[256, 512, 1024, 2048],
         out_channels=256,
         num_outs=5),
     rpn_head=dict(
@@ -142,8 +150,8 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    imgs_per_gpu=2,
-    workers_per_gpu=2,
+    imgs_per_gpu=4,
+    workers_per_gpu=4,
     train=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/instances_train2017.json',
@@ -169,7 +177,7 @@ lr_config = dict(
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    step=[8, 11])
+    step=[10, 15, 20])
 checkpoint_config = dict(interval=1)
 # yapf:disable
 log_config = dict(
@@ -180,10 +188,11 @@ log_config = dict(
     ])
 # yapf:enable
 # runtime settings
-total_epochs = 12
+total_epochs = 23
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 work_dir = './work_dirs/mask_rcnn_r50_fpn_1x'
-load_from = None
+load_from = "./mask_rcnn_r50_fpn_1x_20181010-069fa190.pth"
+# load_from = None
 resume_from = None
 workflow = [('train', 1)]
