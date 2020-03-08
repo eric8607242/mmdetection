@@ -12,11 +12,14 @@ class Proxy(nn.Module):
         self.t = proxyless_mobile(pretrained=True) # Yes, we provide pre-trained models!
     def forward(self, x):
         x = self.t.first_conv(x)
+        out = []
         for i, l in enumerate(self.t.blocks):
             x = l(x)
+            if i in [16, 20, 21]:
+                out.append(x)
         x = self.t.feature_mix_layer(x)
-        print(x.shape)
-        return tuple([x])
+        out.append(x)
+        return tuple(out)
 
     def init_weights(self, pretrained=False):
         pass
