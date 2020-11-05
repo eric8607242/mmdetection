@@ -15,10 +15,13 @@ class Proxy(nn.Module):
         out = []
         for i, l in enumerate(self.t.blocks):
             x = l(x)
-            if i in [16, 20, 21]:
+#             print("=============================")
+#             print(i)
+#             print(x.shape)
+            if i in [4, 8, 16, 20]:
                 out.append(x)
         x = self.t.feature_mix_layer(x)
-        out.append(x)
+#         out.append(x)
         return tuple(out)
 
     def init_weights(self, pretrained=False):

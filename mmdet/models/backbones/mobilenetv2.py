@@ -104,13 +104,18 @@ class MobileNetV2(nn.Module):
         # building last several layers
         self.features.append(conv_1x1_bn(input_channel, self.last_channel))
         # make it nn.Sequential
-        self.features = nn.Sequential(*self.features)
+        self.features = nn.ModuleList(self.features)
 
         # building classifier
         self.classifier = nn.Linear(self.last_channel, n_class)
     def forward(self, x):
-        x = self.features(x)
-        return tuple([x])
+#         x = self.features(x)
+        outs = []
+        for i, l in enumerate(self.features):
+            x = l(x)
+            if i in [3, 6, 13, 16]:
+                outs.append(x)
+        return tuple(outs)
 
     def init_weights(self, pretrained=True):
         state_dict = load_state_dict_from_url(

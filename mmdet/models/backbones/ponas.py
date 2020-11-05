@@ -3,62 +3,230 @@ import math
 import torch
 import torch.nn as nn
 
-from .utils.util import get_logger, create_directories_from_list, check_tensor_in_list, load_layers_info, load_dataparallel_weight, load_search_weight 
-from .utils.net_builder import NORMAL_PRIMITIVES, NORMAL_CS_PRIMITIVES, STRIDE_PRIMITIVES, ApproximateBlock, PDBlock, ConvBNRelu
-from .utils.lookup_table_builder import get_structure_list
-
 from ..registry import BACKBONES
+import math
+
+import torch
+import torch.nn as nn
+
+def conv_1x1_bn(input_depth, output_depth):
+    return nn.Sequential(
+        nn.Conv2d(input_depth, output_depth, 1, 1, 0, bias=False),
+        nn.BatchNorm2d(output_depth),
+        nn.ReLU6(inplace=True)
+    )
+
+class ConvBNRelu(nn.Sequential):
+    def __init__(self, 
+                 input_depth,
+                 output_depth,
+                 kernel,
+                 stride,
+                 pad,
+                 activation="relu",
+                 group=1,
+                 *args,
+                 **kwargs):
+
+        super(ConvBNRelu, self).__init__()
+
+        assert activation in ["hswish", "relu", None]
+        assert stride in [1, 2, 4]
+
+        self.add_module("conv", nn.Conv2d(input_depth, output_depth, kernel, stride, pad, groups=group, bias=False))
+        self.add_module("bn", nn.BatchNorm2d(output_depth))
+
+        if activation == "relu":
+            self.add_module("relu", nn.ReLU6(inplace=True))
+        elif activation == "hswish":
+            self.add_module("hswish", HSwish())
+
+class SEModule(nn.Module):
+    reduction = 4
+    def __init__(self, C):
+        super(SEModule, self).__init__()
+        mid = max(C // self.reduction, 8)
+        conv1 = nn.Conv2d(C, mid, 1, 1, 0)
+        conv2 = nn.Conv2d(mid, C, 1, 1, 0)
+
+        self.operation = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1), conv1, nn.ReLU(inplace=True), conv2, nn.Sigmoid()    
+            )
+
+    def forward(self, x):
+        return x * self.operation(x)
+
+class MBConv(nn.Module):
+    def __init__(self,
+                 input_depth,
+                 output_depth,
+                 expansion,
+                 kernel,
+                 stride,
+                 activation,
+                 group=1,
+                 se=False,
+                 *args,
+                 **kwargs):
+        super(MBConv, self).__init__()
+        self.use_res_connect = True if (stride==1 and input_depth == output_depth) else False
+        mid_depth = int(input_depth * expansion)
+
+        self.group = group
+
+        if input_depth == mid_depth:
+            self.point_wise = nn.Sequential()
+        else:
+            self.point_wise = ConvBNRelu(input_depth,
+                                         mid_depth,
+                                         kernel=1,
+                                         stride=1,
+                                         pad=0,
+                                         activation=activation,
+                                         group=group,
+                                    )
+
+        self.depthwise = ConvBNRelu(mid_depth,
+                                    mid_depth,
+                                    kernel=kernel,
+                                    stride=stride,
+                                    pad=(kernel//2),
+                                    activation=activation,
+                                    group=mid_depth,
+                                )
+
+        self.point_wise_1 = ConvBNRelu(mid_depth,
+                                       output_depth,
+                                       kernel=1,
+                                       stride=1,
+                                       pad=0,
+                                       activation=None,
+                                       group=group,
+                                    )
+        self.se = SEModule(mid_depth) if se else None
+
+    def forward(self, x):
+        y = self.point_wise(x)
+        y = self.depthwise(y)
+
+        y = self.se(y) if self.se is not None else y
+        y = self.point_wise_1(y)
+
+        y = y + x if self.use_res_connect else y
+        return y
+
+
+
+class POBlock(nn.Module):
+    def __init__(self, 
+                 input_depth,
+                 output_depth,
+                 kernel,
+                 stride,
+                 activation="relu",
+                 block_type="MB",
+                 expansion=1,
+                 group=1,
+                 se=False):
+
+        super(POBlock, self).__init__()
+
+        self.block = MBConv(input_depth,
+                            output_depth,
+                            expansion,
+                            kernel,
+                            stride,
+                            activation,
+                            group,
+                            se)         
+
+
+    def forward(self, x):
+        y = self.block(x)
+        return y
+
 
 @BACKBONES.register_module
-class Network(nn.Module):
+class PONASC(nn.Module):
     def __init__(self, classes=1000):
-        super(Network, self).__init__()
-        self.dataset = "imagenet"
-        layers_info = load_layers_info("/home/jovyan/mmdetection/mmdet/models/backbones/330.json")
+        super(PONASC, self).__init__()
 
-        if self.dataset == "cifar10":
-            self.first = ConvBNRelu(input_depth=3, output_depth=32, kernel=3, stride=1, pad=3//2, activation="relu")
-        elif self.dataset == "imagenet":
-            self.first = ConvBNRelu(input_depth=3, output_depth=32, kernel=3, stride=2, pad=3//2, activation="relu")
+
+
+        model_cfg = [
+                [6, 5, False, 2, 32], 
+                [3, 5, False, 1, 32], 
+                [3, 7, True, 2, 40], 
+                [3, 5, True, 1, 40], 
+                [3, 5, False, 1, 40], 
+                [3, 7, False, 1, 40], 
+                [6, 7, True, 2, 80], 
+                [3, 5, True, 1, 80], 
+                [3, 5, True, 1, 80], 
+                [3, 5, True, 1, 80], 
+                [3, 5, False, 1, 96], 
+                [3, 7, False, 1, 96], 
+                [3, 7, False, 1, 96], 
+                [3, 7, True, 1, 96], 
+                [6, 7, True, 2, 192], 
+                [3, 7, True, 1, 192], 
+                [3, 5, False, 1, 192], 
+                [3, 7, True, 1, 192], 
+                [6, 5, True, 1, 320]]
+
+
+
+        self.first = ConvBNRelu(input_depth=3, output_depth=32, kernel=3, stride=2, pad=3//2, activation="relu")
 
         self.stages = nn.ModuleList()
-        self.stages.append(PDBlock(32, 0, 3, 1))
-        output_depth = 16
-        for i, layer in enumerate(layers_info):
+        self.stages.append(POBlock(32, 16, 3, 1))
+        input_depth = 16
+        for i, cfg in enumerate(model_cfg):
+            e, k, se, s, output_depth = cfg
+
+            self.stages.append(POBlock(input_depth=input_depth, 
+                                                           output_depth=output_depth,
+                                                           kernel=k,
+                                                           stride=s,
+                                                           expansion=e,
+                                                           se=se))
             input_depth = output_depth
-            layer_name = layer["name"]
-            cs = int(layer_name.split("_")[3][2:])
-            if cs != -1:
-                output_depth = 16 + 8*cs
-
-            layer_num = i+1
-            if layer_num in [1, 3, 7, 15]:
-                self.stride_layer_structure_list = get_structure_list(STRIDE_PRIMITIVES, i)
-                self.stages.append(self.stride_layer_structure_list[layer_name](input_depth))
-            elif layer_num in [1, 11, 19]:
-                self.normal_cs_layer_structure_list = get_structure_list(NORMAL_CS_PRIMITIVES, i)
-                self.stages.append(self.normal_cs_layer_structure_list[layer_name](input_depth))
-            else:
-                self.normal_layer_structure_list = get_structure_list(NORMAL_PRIMITIVES, i)
-                self.stages.append(self.normal_layer_structure_list[layer_name](input_depth))
 
 
-        self.appro_block = ApproximateBlock(n_class=classes, input_channel=output_depth, interverted_residual_setting = [])
+        self.stages.add_module("last", conv_1x1_bn(input_depth, 1280))
+        self.classifier = nn.Sequential(
+                    nn.Dropout(0.2),
+                    nn.Linear(1280, classes)
+                )
         
+#         self._initialize_weights()
+
     def forward(self, x):
         y = self.first(x)
         out = []
         for i, l in enumerate(self.stages):
             y = l(y)
-#             print("---------------------------------")
-#             print(i)
-#             print(y.shape)
-            if i in [18, 14, 10]:
+            if i in [2, 6, 14, 18]:
                 out.append(y)
-        y = self.appro_block(y)
-        out.append(y)
+#         y = self.stages(y)
+        y = y.mean(3).mean(2)
+        y = self.classifier(y)
         return tuple(out)
 
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                n = m.weight.size(1)
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()
+
     def init_weights(self, pretrained=False):
-        new_state_dict = load_dataparallel_weight("/home/jovyan/mmdetection/mmdet/models/backbones/330.pth")
-        self.load_state_dict(new_state_dict)
+        self.load_state_dict(torch.load("/home/jovyan/mmdetection/mmdet/models/backbones/PONAS_A.pth"))

@@ -69,24 +69,24 @@ class FairNasA(nn.Module):
         assert input_size % 32 == 0
         mb_config = [
             # expansion, out_channel, kernel_size, stride,
-            [3, 32, 7, 2],
+            [3, 32, 5, 2],
             [3, 32, 3, 1],
             [3, 40, 7, 2],
-            [6, 40, 3, 1],
-            [6, 40, 7, 1],
+            [3, 40, 3, 1],
+            [3, 40, 3, 1],
             [3, 40, 3, 1],
             [3, 80, 3, 2],
-            [6, 80, 7, 1],
-            [6, 80, 7, 1],
-            [3, 80, 5, 1],
-            [6, 96, 3, 1],
-            [3, 96, 5, 1],
-            [3, 96, 5, 1],
-            [6, 96, 3, 1],
-            [6, 192, 3, 2],
+            [3, 80, 3, 1],
+            [3, 80, 3, 1],
+            [6, 80, 3, 1],
+            [3, 96, 3, 1],
+            [3, 96, 3, 1],
+            [3, 96, 3, 1],
+            [3, 96, 3, 1],
+            [6, 192, 7, 2],
             [6, 192, 7, 1],
             [6, 192, 3, 1],
-            [6, 192, 7, 1],
+            [6, 192, 3, 1],
             [6, 320, 5, 1],
         ]
         input_channel = 16
@@ -100,7 +100,7 @@ class FairNasA(nn.Module):
             output_channel = c
             self.mb_module.append(InvertedResidual(input_channel, output_channel, k, s, expand_ratio=t))
             input_channel = output_channel
-        self.mb_module = nn.Sequential(*self.mb_module)
+        self.mb_module = nn.ModuleList(self.mb_module)
         self.conv_before_pooling = conv_before_pooling(input_channel, self.last_channel)
         self.classifier = nn.Sequential(
             nn.Dropout(0.2),
@@ -110,12 +110,19 @@ class FairNasA(nn.Module):
     def forward(self, x):
         x = self.stem(x)
         x = self.separable_conv(x)
-        x = self.mb_module(x)
+        out = []
+        for i, l in enumerate(self.mb_module):
+            x = l(x)
+            if i in [1, 5, 13, 17]:
+                out.append(x)
+#         x = self.mb_module(x)
         x = self.conv_before_pooling(x)
+#         out.append(x)
 #         x = x.mean(3).mean(2)
 #         x = self.classifier(x)
-        return tuple([x])
+        return tuple(out)
     
     def init_weights(self, pretrained=False):
-        model_dict = torch.load("/home/jovyan/mmdetection/mmdet/models/backbones/FairNAS/pretrained/FairNasA.pth.tar")
-        self.load_state_dict(model_dict)
+        model_dict = torch.load("/home/jovyan/mmdetection/mmdet/models/backbones/FairNAS/pretrained/FairNasC.pth.tar")
+        self.load_state_dict(model_dict["model_state"])
+        
